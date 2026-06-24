@@ -33,6 +33,12 @@ def main(argv: list[str] | None = None) -> None:
     p_eval = sub.add_parser("eval-smoke", help="CUDA/CPU one-shot generation smoke test")
     p_eval.set_defaults(_run="eval_smoke")
 
+    p_pipe = sub.add_parser(
+        "pipeline",
+        help="Verify -> smoke -> train -> merge using a hardware preset",
+    )
+    p_pipe.set_defaults(_run="pipeline")
+
     args, rest = parser.parse_known_args(argv)
 
     if args._run == "train":
@@ -65,6 +71,10 @@ def main(argv: list[str] | None = None) -> None:
 
         sys.argv = ["eval_smoke", *rest]
         run()
+    elif args._run == "pipeline":
+        from emberglass_tune.pipeline import main as run
+
+        run(rest)
     else:
         parser.error(f"unknown command {args._run}")
 

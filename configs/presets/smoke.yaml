@@ -1,0 +1,23 @@
+# Fast path check only — no full train, no merge.
+name: smoke
+description: Verify + 8-step smoke train.
+
+verify:
+  min_usable: 10
+  max_len: 8192
+
+smoke:
+  out: adapters/_smoke
+  limit: 64
+  max_steps: 8
+  bs: 2
+  grad_accum: 2
+  save_steps: 8
+  valid_frac: 0.1
+  bucket_batch: true
+
+train:
+  max_steps: 0
+
+merge: false
+run_full_train: false

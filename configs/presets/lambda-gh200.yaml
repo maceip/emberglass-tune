@@ -1,0 +1,37 @@
+# NVIDIA GH200 (Lambda, 96–480 GB). Tuned for long bug-report traces.
+name: lambda-gh200
+description: CUDA preset for GH200 — larger micro-batch, length bucketing, token cache.
+
+verify:
+  min_usable: 100
+  max_len: 8192
+
+smoke:
+  out: adapters/_smoke
+  limit: 128
+  max_steps: 8
+  bs: 4
+  grad_accum: 2
+  save_steps: 8
+  valid_frac: 0.05
+  bucket_batch: true
+  cache_dir: .emberglass-cache
+
+train:
+  epochs: 3
+  bs: 8
+  grad_accum: 4
+  max_len: 8192
+  lr: 1.0e-4
+  save_steps: 200
+  eval_steps: 400
+  valid_frac: 0.04
+  attn: auto
+  bucket_batch: true
+  cache_dir: .emberglass-cache
+  dataloader_workers: 4
+  lora_r: 32
+  lora_alpha: 64
+
+merge: true
+merged_out: models/merged

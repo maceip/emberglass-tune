@@ -1,0 +1,37 @@
+# 24–48 GB consumer GPU (RTX 4090, A10, etc.)
+name: consumer-gpu
+description: Smaller micro-batch, same bucketing + cache defaults.
+
+verify:
+  min_usable: 100
+  max_len: 4096
+
+smoke:
+  out: adapters/_smoke
+  limit: 128
+  max_steps: 8
+  bs: 2
+  grad_accum: 4
+  save_steps: 8
+  valid_frac: 0.05
+  bucket_batch: true
+  cache_dir: .emberglass-cache
+
+train:
+  epochs: 3
+  bs: 2
+  grad_accum: 16
+  max_len: 4096
+  lr: 1.0e-4
+  save_steps: 200
+  eval_steps: 400
+  valid_frac: 0.04
+  attn: auto
+  bucket_batch: true
+  cache_dir: .emberglass-cache
+  dataloader_workers: 2
+  lora_r: 32
+  lora_alpha: 64
+
+merge: true
+merged_out: models/merged

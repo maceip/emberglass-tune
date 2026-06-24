@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Phase-1 cold-start SFT: LoRA fine-tune VibeThinker-3B on faithful reasoning traces."""
 import argparse
-import json
 import sys
-from pathlib import Path
 
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model
@@ -15,91 +13,41 @@ from transformers import (
     TrainingArguments,
 )
 
-IGNORE = -100
+from emberglass_tune.tokenize import (
+    IGNORE,
+    LengthGroupedBatchSampler,
+    load_or_build_examples,
+    read_jsonl,
+    resolve_attn,
+)
 
 
-def read_jsonl(path):
-    rows = []
-    for ln in Path(path).read_text(encoding="utf-8").split("\n"):
-        ln = ln.strip()
-        if ln:
-            try:
-                rows.append(json.loads(ln))
-            except json.JSONDecodeError:
-                pass
-    return rows
+class BucketTrainer(Trainer):
+    """Trainer that batches by similar sequence length to reduce padding."""
 
+    def __init__(self, *args, bucket_batch: bool = False, **kwargs):
+        self.bucket_batch = bucket_batch
+        super().__init__(*args, **kwargs)
 
-def shrink_user(msgs, user_idx, fraction=0.85):
-    content = msgs[user_idx]["content"]
-    if len(content) < 400:
-        return False
-    keep = max(400, int(len(content) * fraction))
-    msgs[user_idx]["content"] = content[:keep] + "\n...[truncated for length]...\n"
-    return True
+    def get_train_dataloader(self):
+        if not self.bucket_batch:
+            return super().get_train_dataloader()
+        from torch.utils.data import DataLoader
 
-
-def build_examples(rows, tok, max_len):
-    """Tokenize conversations; mask prompt tokens; preserve assistant tail on truncation."""
-    keep = []
-    dropped = {"no_user": 0, "no_trainable": 0}
-
-    for r in rows:
-        msgs = [dict(m) for m in r["messages"]]
-        user_idx = next((i for i, m in enumerate(msgs) if m["role"] == "user"), None)
-        if user_idx is None:
-            dropped["no_user"] += 1
-            continue
-
-        for _ in range(24):
-            full_text = tok.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=False,
-            )
-            full_ids = tok.encode(full_text, add_special_tokens=False)
-            if len(full_ids) <= max_len:
-                break
-            if not shrink_user(msgs, user_idx):
-                break
-
-        prompt_text = tok.apply_chat_template(
-            msgs[:-1], tokenize=False, add_generation_prompt=True,
+        lengths = [len(x["input_ids"]) for x in self.train_dataset]
+        batch_sampler = LengthGroupedBatchSampler(
+            lengths,
+            batch_size=self.args.per_device_train_batch_size,
+            world_size=max(1, self.args.world_size),
+            seed=self.args.seed,
         )
-        full_text = tok.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=False,
+        return DataLoader(
+            self.train_dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=self.data_collator,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
         )
-        prompt_ids = tok.encode(prompt_text, add_special_tokens=False)
-        full_ids = tok.encode(full_text, add_special_tokens=False)
-        assistant_start = len(prompt_ids)
-
-        if len(full_ids) > max_len:
-            assistant_ids = full_ids[assistant_start:]
-            if not assistant_ids:
-                dropped["no_trainable"] += 1
-                continue
-            if len(assistant_ids) >= max_len:
-                assistant_ids = assistant_ids[-(max_len - 512):]
-                prompt_ids = full_ids[: min(512, assistant_start)]
-            else:
-                room = max_len - len(assistant_ids)
-                prompt_ids = full_ids[:assistant_start][-room:]
-            full_ids = prompt_ids + assistant_ids
-            assistant_start = len(prompt_ids)
-
-        labels = list(full_ids)
-        for i in range(min(assistant_start, len(labels))):
-            labels[i] = IGNORE
-        trainable = sum(1 for x in labels if x != IGNORE)
-        if trainable < 32:
-            dropped["no_trainable"] += 1
-            continue
-
-        keep.append({
-            "input_ids": full_ids,
-            "labels": labels,
-            "attention_mask": [1] * len(full_ids),
-        })
-
-    return keep, dropped
 
 
 def main():
@@ -121,8 +69,32 @@ def main():
     ap.add_argument("--valid-frac", type=float, default=0.04)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--save-steps", type=int, default=200)
+    ap.add_argument("--eval-steps", type=int, default=0, help="0 = same as save-steps")
     ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument(
+        "--attn",
+        choices=["auto", "sdpa", "flash_attention_2", "eager"],
+        default="auto",
+        help="Attention backend (auto tries flash_attn when installed)",
+    )
+    ap.add_argument(
+        "--bucket-batch",
+        action="store_true",
+        default=True,
+        help="Batch similar-length sequences (default: on)",
+    )
+    ap.add_argument("--no-bucket-batch", action="store_true")
+    ap.add_argument(
+        "--cache-dir",
+        default="",
+        help="Reuse tokenized examples on disk (.emberglass-cache)",
+    )
+    ap.add_argument("--dataloader-workers", type=int, default=2)
     args = ap.parse_args()
+
+    bucket_batch = args.bucket_batch and not args.no_bucket_batch
+    eval_steps = args.eval_steps or args.save_steps
+    attn = resolve_attn(args.attn)
 
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tok.pad_token is None:
@@ -133,7 +105,16 @@ def main():
         rows = rows[: args.limit]
     print(f"[sft] loaded {len(rows)} trace rows", flush=True)
 
-    examples, dropped = build_examples(rows, tok, args.max_len)
+    cache_dir = args.cache_dir or None
+    examples, dropped = load_or_build_examples(
+        rows,
+        tok,
+        args.max_len,
+        cache_dir,
+        args.model,
+        args.data,
+        args.limit,
+    )
     print(
         f"[sft] tokenized {len(examples)} usable examples "
         f"(dropped {len(rows)-len(examples)}: {dropped})",
@@ -145,13 +126,25 @@ def main():
 
     if args.valid:
         valid_rows = read_jsonl(args.valid)
-        valid_ex, _ = build_examples(valid_rows, tok, args.max_len)
+        valid_ex, _ = load_or_build_examples(
+            valid_rows,
+            tok,
+            args.max_len,
+            cache_dir,
+            args.model,
+            args.valid,
+            0,
+        )
         train_ex = examples
     else:
         n_val = max(1, int(len(examples) * args.valid_frac))
         valid_ex = examples[:n_val]
         train_ex = examples[n_val:]
-    print(f"[sft] train={len(train_ex)} valid={len(valid_ex)}", flush=True)
+    print(
+        f"[sft] train={len(train_ex)} valid={len(valid_ex)} "
+        f"attn={attn} bucket_batch={bucket_batch}",
+        flush=True,
+    )
 
     train_ds = Dataset.from_list(train_ex)
     valid_ds = Dataset.from_list(valid_ex)
@@ -160,7 +153,7 @@ def main():
         args.model,
         torch_dtype="auto",
         trust_remote_code=True,
-        attn_implementation="sdpa",
+        attn_implementation=attn,
     )
     model.config.use_cache = False
     if hasattr(model, "enable_input_require_grads"):
@@ -197,19 +190,22 @@ def main():
         save_steps=args.save_steps,
         save_total_limit=4,
         eval_strategy="steps",
-        eval_steps=args.save_steps,
+        eval_steps=eval_steps,
         report_to=[],
         gradient_checkpointing=True,
         remove_unused_columns=False,
         seed=args.seed,
+        dataloader_num_workers=args.dataloader_workers,
+        dataloader_pin_memory=True,
     )
 
-    trainer = Trainer(
+    trainer = BucketTrainer(
         model=model,
         args=targs,
         train_dataset=train_ds,
         eval_dataset=valid_ds,
         data_collator=collator,
+        bucket_batch=bucket_batch,
     )
     trainer.train()
     trainer.save_model(args.out)
