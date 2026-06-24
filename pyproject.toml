@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
 
 [project]
 name = "emberglass-tune"
 version = "0.1.0"
-description = "LoRA / SFT training for Qwen2.5-class models (VibeThinker). Forward-pass lives in emberglass."
+description = "LoRA / SFT training and MLX/CUDA eval for VibeThinker-3B."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+authors = [{ name = "maceip" }]
 dependencies = [
   "torch>=2.2",
   "transformers>=4.44",
@@ -26,6 +27,11 @@ anthropic = ["anthropic>=0.34"]
 [project.scripts]
 emberglass-tune = "emberglass_tune.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["emberglass_tune*"]
+[project.urls]
+Repository = "https://github.com/maceip/emberglass-tune"
+
+[tool.hatch.build.targets.wheel]
+packages = ["emberglass_tune"]
+
+[tool.uv]
+package = true

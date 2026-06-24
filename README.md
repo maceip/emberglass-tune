@@ -1,58 +1,52 @@
 # Emberglass Tune
 
-**Train and smoke-eval LoRA adapters for VibeThinker-3B (Qwen2.5-class) on MLX and CUDA.**
+LoRA / SFT **training** for VibeThinker-3B (MLX + CUDA). Inference: [emberglass](https://github.com/maceip/qwen-webgpu-lora). Demo: [vibebounty](https://github.com/maceip/vibebounty).
 
-This repo owns the **backward pass** only. It does not run the HackerOne demo or browser WebGPU inference.
+## Install & run (uv)
 
-| Repo | Role |
+From a clone of this repo:
+
+```bash
+cd emberglass-tune
+uv sync
+uv run emberglass-tune --help
+uv run emberglass-tune train --model WeiboAI/VibeThinker-3B --data traces.jsonl --out adapters/run
+```
+
+One-shot without installing (from GitHub once pushed):
+
+```bash
+uvx --from git+https://github.com/maceip/emberglass-tune emberglass-tune --help
+```
+
+From a local path:
+
+```bash
+uvx --from /path/to/emberglass-tune emberglass-tune --help
+```
+
+Optional extras:
+
+```bash
+uv sync --extra mlx        # Apple Silicon MLX
+uv sync --extra anthropic  # trace_gen teacher API
+```
+
+## Commands
+
+| Command | Purpose |
 |---|---|
-| **[emberglass](https://github.com/maceip/qwen-webgpu-lora)** | Optimized **WebGPU inference** for VibeThinker-3B |
-| **emberglass-tune** (this) | **Tune + eval** scripts (MLX on Mac, CUDA/PEFT on Linux GPU) |
-| **[vibebounty](https://github.com/maceip/vibebounty)** | **Product demo**: bug-bounty tune + HackerOne UI + serve |
+| `train` | PEFT LoRA SFT (CUDA / CPU) |
+| `merge` | Bake adapter into base weights |
+| `verify` | Tokenization preflight on JSONL |
+| `gate-traces` | Trace quality gate |
+| `traces` | Teacher reasoning trace generation |
+| `eval-smoke` | One-shot generation smoke test |
 
-## Install
-
-```bash
-cd ~/emberglass-tune
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e .                   # CUDA / PEFT training
-pip install -e ".[mlx]"            # optional: Apple Silicon MLX
-```
-
-## CLI
+## VibeBounty
 
 ```bash
-emberglass-tune train        --model WeiboAI/VibeThinker-3B --data traces.jsonl --out adapters/run
-emberglass-tune merge        --base WeiboAI/VibeThinker-3B --adapter adapters/run --out models/merged
-emberglass-tune verify       --model WeiboAI/VibeThinker-3B --data traces.jsonl --min-usable 100
-emberglass-tune gate-traces  --traces traces.jsonl --test test.jsonl --out gate.json
-emberglass-tune traces       --in train.jsonl --out train_traces.jsonl --workers 8
-emberglass-tune eval-smoke   --base WeiboAI/VibeThinker-3B --adapter adapters/run
+cd ../vibebounty
+uv sync
+uv run emberglass-tune train --model WeiboAI/VibeThinker-3B --data data/sft/train_traces.jsonl --out adapters/run
 ```
-
-## Scripts
-
-| Script | Platform | Purpose |
-|---|---|---|
-| `scripts/train_mlx.sh` | MLX / Mac | `mlx_lm.lora` with `configs/lora_default.yaml` |
-| `scripts/launch_gpu_train.sh` | CUDA | verify → smoke train → full SFT → merge |
-| `scripts/eval_mlx.sh` | MLX | fuse + `mlx_lm.generate` smoke |
-| `scripts/eval_cuda.sh` | CUDA | verify + `eval-smoke` generation |
-
-## VibeBounty usage
-
-[VibeBounty](https://github.com/maceip/vibebounty) keeps domain data, prompts, and the demo app. Install this package from the sibling directory:
-
-```bash
-cd ~/vibebounty
-pip install -r requirements-train.txt
-bash scripts/train_gpu_bugbounty.sh
-```
-
-Domain-specific metrics (9-class triage accuracy, adversarial suite) stay in **vibebounty/eval/**.
-
-## Related
-
-- Inference: [emberglass](https://github.com/maceip/qwen-webgpu-lora)
-- Demo app: [vibebounty](https://github.com/maceip/vibebounty)
